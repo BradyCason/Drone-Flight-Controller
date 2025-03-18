@@ -1,0 +1,8 @@
+# STM32CubeIDE
+/.project
+/.cproject
+/.settings/
+/Debug/
+/Release/
+/.touch
+/.launch
