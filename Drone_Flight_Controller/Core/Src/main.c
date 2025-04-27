@@ -22,10 +22,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
-#include "sensors.h"
-#include "PID.h"
-#include "motors.h"
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,20 +31,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
-#define MAX_MOTOR_SPEED 2047
-
-#define MIN_ESC_PWM 1000
-#define MAX_ESC_PWM 2000
-
-#define ROLL_MIN -200
-#define ROLL_MAX 200
-#define PITCH_MIN -200
-#define PITCH_MAX 200
-#define YAW_MIN -200
-#define YAW_MAX 200
-#define THROTTLE_MIN 500
-#define THROTTLE_MAX 500
 
 /* USER CODE END PD */
 
@@ -62,21 +44,34 @@ I2C_HandleTypeDef hi2c1;
 I2C_HandleTypeDef hi2c2;
 
 TIM_HandleTypeDef htim1;
-DMA_HandleTypeDef hdma_tim1_ch1;
-DMA_HandleTypeDef hdma_tim1_ch2;
-DMA_HandleTypeDef hdma_tim1_ch4_trig_com;
-DMA_HandleTypeDef hdma_tim1_ch3;
+TIM_HandleTypeDef htim2;
 
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 
-uint8_t sbusData[25];
+volatile unsigned char IMU_ready = 0;
+volatile unsigned char Mag_ready = 0;
+volatile unsigned char Baro_ready = 0;
 
-int roll_command = 0;
-int pitch_command = 0;
-int throttle_command = 0;
-int yaw_command = 0;
+volatile unsigned char armed = 1;
+
+// Sensor Variables
+float accel_x = 0;
+float accel_y = 0;
+float accel_z = 0;
+float gyro_x = 0;
+float gyro_y = 0;
+float gyro_z = 0;
+
+float temperature = 0;
+float pressure = 0;
+
+float mag_x = 0;
+float mag_y = 0;
+float mag_z = 0;
+
+uint8_t sbusData[25];
 
 float desired_throttle = MIN_ESC_PWM;
 float desired_roll = MIN_ESC_PWM;
@@ -88,70 +83,23 @@ float desired_yaw = MIN_ESC_PWM;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
-static void MX_DMA_Init(void);
 static void MX_I2C1_Init(void);
 static void MX_TIM1_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_I2C2_Init(void);
+static void MX_TIM2_Init(void);
 /* USER CODE BEGIN PFP */
 
-float scaled(float value, float old_min, float old_max, float new_min, float new_max){
-	return (value - old_min) * (new_max - new_min)  / (old_max - old_min) + new_min;
-}
-
-void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    if (huart->Instance == USART2) {
-        if (sbusData[0] == 0x0F && sbusData[24] == 0x00) {
-            // Valid SBUS packet, process channels
-            uint16_t channels[16];
-
-            channels[0]  = (sbusData[1] | (sbusData[2] << 8)) & 0x07FF;
-			channels[1]  = ((sbusData[2] >> 3) | (sbusData[3] << 5)) & 0x07FF;
-			channels[2]  = ((sbusData[3] >> 6) | (sbusData[4] << 2) | (sbusData[5] << 10)) & 0x07FF;
-			channels[3]  = ((sbusData[5] >> 1) | (sbusData[6] << 7)) & 0x07FF;
-			channels[4]  = ((sbusData[6] >> 4) | (sbusData[7] << 4)) & 0x07FF;
-			channels[5]  = ((sbusData[7] >> 7) | (sbusData[8] << 1) | (sbusData[9] << 9)) & 0x07FF;
-			channels[6]  = ((sbusData[9] >> 2) | (sbusData[10] << 6)) & 0x07FF;
-			channels[7]  = ((sbusData[10] >> 5) | (sbusData[11] << 3)) & 0x07FF;
-			channels[8]  = (sbusData[12] | (sbusData[13] << 8)) & 0x07FF;
-			channels[9]  = ((sbusData[13] >> 3) | (sbusData[14] << 5)) & 0x07FF;
-			channels[10] = ((sbusData[14] >> 6) | (sbusData[15] << 2) | (sbusData[16] << 10)) & 0x07FF;
-			channels[11] = ((sbusData[16] >> 1) | (sbusData[17] << 7)) & 0x07FF;
-			channels[12] = ((sbusData[17] >> 4) | (sbusData[18] << 4)) & 0x07FF;
-			channels[13] = ((sbusData[18] >> 7) | (sbusData[19] << 1) | (sbusData[20] << 9)) & 0x07FF;
-			channels[14] = ((sbusData[20] >> 2) | (sbusData[21] << 6)) & 0x07FF;
-			channels[15] = ((sbusData[21] >> 5) | (sbusData[22] << 3)) & 0x07FF;
-
-			// Read failsafe & frame lost flags
-		    uint8_t failsafe = sbusData[23] & 0x08;
-		    uint8_t frame_lost = sbusData[23] & 0x04;
-
-            // Process commands and normalize around 0
-		    desired_roll = scaled(channels[0], 0, 2047, ROLL_MIN, ROLL_MAX);
-		    desired_pitch = scaled(channels[1], 0, 2047, PITCH_MAX, PITCH_MAX);
-		    desired_throttle = scaled(channels[2], 0, 2047, THROTTLE_MIN, THROTTLE_MAX);
-		    desired_yaw = scaled(channels[3], 0, 2047, YAW_MIN, YAW_MAX);
-        }
-        HAL_UART_Receive_IT(&huart2, sbusData, 25);
-    }
-}
-
-void update_motor_speeds(float throttle, float roll_correction, float pitch_correction, float yaw_correction){
-	float m1 = MIN_ESC_PWM + throttle + pitch_correction + roll_correction - yaw_correction;
-	float m2 = MIN_ESC_PWM + throttle + pitch_correction - roll_correction + yaw_correction;
-	float m3 = MIN_ESC_PWM + throttle - pitch_correction + roll_correction + yaw_correction;
-	float m4 = MIN_ESC_PWM + throttle - pitch_correction - roll_correction - yaw_correction;
-
-	// Constrain values to safe PWM range (1000µs - 2000µs)
-	if (m1 > 2000) m1 = 2000; else if (m1 < 1000) m1 = 1000;
-	if (m2 > 2000) m2 = 2000; else if (m2 < 1000) m2 = 1000;
-	if (m3 > 2000) m3 = 2000; else if (m3 < 1000) m3 = 1000;
-	if (m4 > 2000) m4 = 2000; else if (m4 < 1000) m4 = 1000;
-
-	HAL_DMA_Start(&hdma_tim1_ch1, (uint32_t)&m1, (uint32_t)&TIM1->CCR1, 1); // For motor 1
-	HAL_DMA_Start(&hdma_tim1_ch2, (uint32_t)&m2, (uint32_t)&TIM1->CCR2, 1); // For motor 2
-	HAL_DMA_Start(&hdma_tim1_ch3, (uint32_t)&m3, (uint32_t)&TIM1->CCR3, 1); // For motor 3
-	HAL_DMA_Start(&hdma_tim1_ch4, (uint32_t)&m4, (uint32_t)&TIM1->CCR4, 1); // For motor 4
+uint32_t result3 = 0;
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart){
+	result3 = 100;
+	if (huart->Instance == USART2) {
+//		if (sbusData[0] == 0x0F && sbusData[24] == 0x00) {
+//			// Valid SBUS packet, process channels
+//	    	receive_command(sbusData, &desired_roll, &desired_pitch, &desired_yaw, &desired_throttle);
+//		}
+		HAL_UART_Receive_IT(&huart2, sbusData, 25);
+	}
 }
 
 void buzzer_on(){
@@ -168,6 +116,13 @@ void buzzer_off(){
 /* USER CODE BEGIN 0 */
 
 PIDController pid_roll, pid_pitch, pid_yaw;
+
+uint16_t my_motor_value[4] = {50, 50, 50, 48};
+
+
+
+
+
 
 /* USER CODE END 0 */
 
@@ -200,28 +155,29 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_DMA_Init();
   MX_I2C1_Init();
   MX_TIM1_Init();
   MX_USART2_UART_Init();
   MX_I2C2_Init();
+  MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
+
+  // Arm Motors
+  Motors_Arm();
+
+//  HAL_Delay(100);
+//  init_sensors(&hi2c1);
+//  HAL_Delay(100);
 
   // Begin Listening for radio commands
   HAL_UART_Receive_IT(&huart2, sbusData, 25);
 
+  buzzer_on();
+
   // Initialize PID controllers (tune these values)
-  PID_Init(&pid_roll, 1.2, 0.01, 0.05, ROLL_MIN, ROLL_MAX);
-  PID_Init(&pid_pitch, 1.2, 0.01, 0.05, PITCH_MIN, PITCH_MAX);
-  PID_Init(&pid_yaw, 1.5, 0.02, 0.1, YAW_MIN, YAW_MAX);
-
-  // Start PWM on TIM1 with DMA for all channels
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // Start PWM on Channel 1
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);  // Start PWM on Channel 2
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);  // Start PWM on Channel 3
-  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);  // Start PWM on Channel 4
-
-  uint32_t prev_time = millis();
+//  PID_Init(&pid_roll, 1.2, 0.01, 0.05, ROLL_MIN, ROLL_MAX);
+//  PID_Init(&pid_pitch, 1.2, 0.01, 0.05, PITCH_MIN, PITCH_MAX);
+//  PID_Init(&pid_yaw, 1.5, 0.02, 0.1, YAW_MIN, YAW_MAX);
 
   /* USER CODE END 2 */
 
@@ -229,20 +185,32 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  uint32_t current_time = millis();
-	  float dt = (current_time - prev_time) / 1000.0;
-	  prev_time = current_time;
+//	  if (IMU_ready){
+//		  IMU_ready = 0;
+//		  read_IMU(&hi2c1, &accel_x, &accel_y, &accel_z, &gyro_x, &gyro_y, &gyro_z);
+//
+//		  float roll = accel_x;
+//		  float pitch = accel_y;
+//		  float yaw = accel_z;
+//
+//		  // Compute PID corrections
+//		  float roll_correction = PID_Compute(&pid_roll, desired_roll, roll, 1);
+//		  float pitch_correction = PID_Compute(&pid_pitch, desired_pitch, pitch, 1);
+//		  float yaw_correction = PID_Compute(&pid_yaw, desired_yaw, yaw, 1);
+//
+//		  // Apply corrections to motors
+//		  set_motor_speeds(desired_throttle, roll_correction, pitch_correction, yaw_correction);
+//	  }
+//	  if (Mag_ready){
+//		  Mag_ready = 0;
+//		  read_Mag(&hi2c1, &mag_x, &mag_y, &mag_z);
+//	  }
+//	  if (Baro_ready){
+//		  Baro_ready = 0;
+//		  read_Baro(&hi2c1, &temperature, &pressure);
+//	  }
 
-	  // Read IMU data
-	  read_sensors();
-
-	  // Compute PID corrections
-	  float roll_correction = PID_Compute(&pid_roll, desired_roll, roll, dt);
-	  float pitch_correction = PID_Compute(&pid_pitch, desired_pitch, pitch, dt);
-	  float yaw_correction = PID_Compute(&pid_yaw, desired_yaw, yaw, dt);
-
-	  // Apply corrections to motors
-	  update_motor_speeds(desired_throttle, roll_correction, pitch_correction, yaw_correction);
+	  HAL_Delay(1);
 
     /* USER CODE END WHILE */
 
@@ -381,12 +349,12 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 11;
+  htim1.Init.Prescaler = 15;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 65535;
+  htim1.Init.Period = 500;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
-  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
   {
     Error_Handler();
@@ -400,10 +368,6 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  if (HAL_TIM_OC_Init(&htim1) != HAL_OK)
-  {
-    Error_Handler();
-  }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
   if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
@@ -411,7 +375,7 @@ static void MX_TIM1_Init(void)
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
+  sConfigOC.Pulse = 125;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
@@ -429,8 +393,7 @@ static void MX_TIM1_Init(void)
   {
     Error_Handler();
   }
-  sConfigOC.OCMode = TIM_OCMODE_TIMING;
-  if (HAL_TIM_OC_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
   {
     Error_Handler();
   }
@@ -453,6 +416,51 @@ static void MX_TIM1_Init(void)
 }
 
 /**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 4294967295;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -468,10 +476,10 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 100000;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.StopBits = UART_STOPBITS_2;
+  huart2.Init.Parity = UART_PARITY_EVEN;
   huart2.Init.Mode = UART_MODE_TX_RX;
   huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
   huart2.Init.OverSampling = UART_OVERSAMPLING_16;
@@ -481,32 +489,9 @@ static void MX_USART2_UART_Init(void)
   }
   /* USER CODE BEGIN USART2_Init 2 */
 
+  USART2->CR2 |= USART_CR2_RXINV;
+
   /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
-  * Enable DMA controller clock
-  */
-static void MX_DMA_Init(void)
-{
-
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA2_CLK_ENABLE();
-
-  /* DMA interrupt init */
-  /* DMA2_Stream1_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream1_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream1_IRQn);
-  /* DMA2_Stream2_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
-  /* DMA2_Stream4_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream4_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream4_IRQn);
-  /* DMA2_Stream6_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream6_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA2_Stream6_IRQn);
 
 }
 

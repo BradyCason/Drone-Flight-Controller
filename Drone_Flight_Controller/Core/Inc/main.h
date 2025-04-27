@@ -32,6 +32,12 @@ extern "C" {
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
+#include "sensors.h"
+#include "state_machine.h"
+#include "receiver.h"
+#include "PID.h"
+#include "motors.h"
+
 /* USER CODE END Includes */
 
 /* Exported types ------------------------------------------------------------*/
@@ -61,6 +67,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 
 /* USER CODE BEGIN Private defines */
+
+#define USART_CR2_RXINV ((uint32_t)0x00010000)
 
 /* USER CODE END Private defines */
 

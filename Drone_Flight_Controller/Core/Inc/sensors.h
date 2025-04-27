@@ -10,26 +10,21 @@
 
 #include "stm32f4xx.h"
 
-uint32_t last_IMU_read = 0;
-uint32_t last_baro_read = 0;
-uint32_t last_mag_read = 0;
-uint32_t IMU_cycle_length = 2;
-uint32_t baro_cycle_length = 50;
-uint32_t mag_cycle_length = 50;
+#define MPU6050_ADDRESS (0x68 << 1)
+#define BMP180_ADDRESS (0x77 << 1)
+#define HMC5883L_ADDRESS (0x1E << 1)
 
-extern volatile uint32_t millisCounter;
+uint32_t millis(void);
 
-float roll;
-float pitch;
-float yaw;
-float mag_heading;
-float pressure;
-float altitude;
+void init_Mag(I2C_HandleTypeDef *hi2c);
+void read_Mag(I2C_HandleTypeDef *hi2c, float *mag_x, float *mag_y, float *mag_z);
 
-uint32_t millis();
-void read_IMU();
-void read_mag();
-void read_Barometer();
-void read_sensors();
+void init_Baro(I2C_HandleTypeDef *hi2c);
+void read_Baro(I2C_HandleTypeDef *hi2c, float *temperature, float *pressure);
+
+void init_IMU(I2C_HandleTypeDef *hi2c);
+void read_IMU(I2C_HandleTypeDef *hi2c, float *accel_x, float *accel_y, float *accel_z, float *gyro_x, float *gyro_y, float *gyro_z);
+
+void init_sensors(I2C_HandleTypeDef *hi2c);
 
 #endif /* INC_SENSORS_H_ */
